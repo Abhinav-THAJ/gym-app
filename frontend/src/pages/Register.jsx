@@ -305,8 +305,8 @@ export default function Register() {
                                     <Button type="button" variant="outline" onClick={() => setStep(1)} className="flex-1 h-12 rounded-xl border-zinc-700 hover:bg-zinc-800">
                                         Back
                                     </Button>
-                                    <Button type="submit" className="flex-[2] h-12 rounded-xl bg-fitness-green text-black hover:bg-fitness-green/90 font-bold">
-                                        {formData.subscriptionTier === 'free' ? 'Complete' : 'Proceed'}
+                                    <Button type="submit" disabled={isLoading} className="flex-[2] h-12 rounded-xl bg-fitness-green text-black hover:bg-fitness-green/90 font-bold">
+                                        {isLoading ? "Loading..." : (formData.subscriptionTier === 'free' ? 'Complete' : 'Proceed')}
                                     </Button>
                                 </div>
                             </motion.div>

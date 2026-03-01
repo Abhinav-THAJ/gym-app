@@ -12,24 +12,25 @@ router = APIRouter(
     tags=["users"]
 )
 
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
-    credentials_exception = HTTPException(
-        status_code=401,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    try:
-        payload = jwt.decode(token, auth.SECRET_KEY, algorithms=[auth.ALGORITHM])
-        email: str = payload.get("sub")
-        if email is None:
-            raise credentials_exception
-        token_data = schemas.TokenData(email=email)
-    except JWTError:
-        raise credentials_exception
-    
-    user = db.query(models.User).filter(models.User.email == token_data.email).first()
-    if user is None:
-        raise credentials_exception
+def get_current_user(db: Session = Depends(get_db)):
+    # DEV MODE: Bypass authentication
+    # Return the first user in the database
+    user = db.query(models.User).first()
+    if not user:
+        # Create a dummy user if none exists
+        # This ensures the app works even with an empty DB
+        hashed_password = auth.get_password_hash("password")
+        user = models.User(
+            email="dev@example.com",
+            hashed_password=hashed_password,
+            full_name="Developer",
+            is_verified=True,
+            subscription_tier="premium"
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        
     return user
 
 @router.get("/me", response_model=schemas.User)

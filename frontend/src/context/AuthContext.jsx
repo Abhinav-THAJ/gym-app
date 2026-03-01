@@ -8,6 +8,12 @@ export const AuthProvider = ({ children }) => {
     const [token, setToken] = useState(localStorage.getItem('token'));
     const [loading, setLoading] = useState(true);
 
+    function logout() {
+        localStorage.removeItem('token');
+        setToken(null);
+        setUser(null);
+    }
+
     useEffect(() => {
         if (token) {
             // Validate token and fetch user profile
@@ -26,6 +32,7 @@ export const AuthProvider = ({ children }) => {
                 })
                 .finally(() => setLoading(false));
         } else {
+            // eslint-disable-next-line react-hooks/set-state-in-effect
             setLoading(false);
         }
     }, [token]);
@@ -79,11 +86,7 @@ export const AuthProvider = ({ children }) => {
         return true;
     };
 
-    const logout = () => {
-        localStorage.removeItem('token');
-        setToken(null);
-        setUser(null);
-    };
+
 
     return (
         <AuthContext.Provider value={{ user, token, login, register, logout, loading }}>
@@ -92,4 +95,5 @@ export const AuthProvider = ({ children }) => {
     );
 };
 
+// eslint-disable-next-line react-refresh/only-export-components
 export const useAuth = () => useContext(AuthContext);

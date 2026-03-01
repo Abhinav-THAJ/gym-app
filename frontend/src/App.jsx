@@ -11,26 +11,23 @@ import Profile from './pages/Profile';
 import Settings from './pages/Settings';
 import PendingVerification from './pages/PendingVerification';
 import Layout from './components/Layout';
+import Landing from './pages/Landing';
 
+// Properly check authentication
 const ProtectedRoute = ({ children }) => {
-  const { token, user, loading } = useAuth();
+  const { token, loading } = useAuth();
   const location = useLocation();
 
-  if (loading) return null;
+  if (loading) {
+    return <div className="flex items-center justify-center min-h-screen bg-black text-white">Loading...</div>;
+  }
 
   if (!token) {
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
-  // Verification check removed
-  // if (user && !user.is_verified && location.pathname !== '/pending') {
-  //   return <Navigate to="/pending" replace />;
-  // }
-
   return children;
 };
-
-import Landing from './pages/Landing';
 
 function App() {
   return (
@@ -39,11 +36,13 @@ function App() {
         <AuthProvider>
           <Layout>
             <Routes>
-              <Route path="/" element={<Landing />} />
+              {/* Public Routes */}
+              <Route path="/" element={<Navigate to="/dashboard" replace />} />
               <Route path="/login" element={<Login />} />
               <Route path="/register" element={<Register />} />
               <Route path="/pending" element={<PendingVerification />} />
 
+              {/* Protected Routes */}
               <Route
                 path="/dashboard"
                 element={

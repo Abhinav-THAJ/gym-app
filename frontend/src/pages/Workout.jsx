@@ -32,6 +32,7 @@ export default function Workout() {
     useEffect(() => {
         if (location.state?.exercise) {
             const exercise = location.state.exercise;
+            // eslint-disable-next-line react-hooks/set-state-in-effect
             setPendingExercise(exercise);
             setShowModal(false);
             setShowInstructions(true);
@@ -42,7 +43,7 @@ export default function Workout() {
     const { user } = useAuth();
     const userWeight = user?.weight || 70; // Default to 70kg if not found
 
-    const { reps, feedback, stage, currentAngle, formWarning, calories, score, isTooFast, errorCount, goodReps } = useExerciseCounter(landmarks, currentExercise, userWeight);
+    const { reps, feedback, stage, currentAngle, formWarning, calories, isTooFast, errorCount, goodReps } = useExerciseCounter(landmarks, currentExercise, userWeight);
 
     const [showFeedbackModal, setShowFeedbackModal] = useState(false);
     const [sessionData, setSessionData] = useState(null);

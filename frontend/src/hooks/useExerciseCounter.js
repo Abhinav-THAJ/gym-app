@@ -1,8 +1,26 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { calculateAngle, EXERCISES, EXERCISE_CONFIG } from '../lib/poseUtils';
+import { EXERCISES } from '../lib/poseUtils';
+import { analyzeForm } from '../lib/formAnalysis';
 import { EXERCISE_THRESHOLDS } from '../lib/exerciseThresholds';
 
-// MET values (Metabolic Equivalent of Task) for calorie calculation
+// Critical errors per exercise — if any of these fire during a rep, the rep is BLOCKED
+const CRITICAL_ERRORS = {
+    [EXERCISES.BICEP_CURL]: [
+        "Body swinging",   // Hip/torso cheat
+        "Elbow swinging",  // Elbow drift
+    ],
+    [EXERCISES.SQUAT]: [
+        "Left knee caving in",
+        "Right knee caving in",
+        "Leaning too far forward",
+    ],
+    [EXERCISES.PUSHUP]: [
+        "Hips sagging",
+        "Hips too high",
+    ],
+    [EXERCISES.JUMPING_JACK]: [],
+};
+
 const MET_VALUES = {
     [EXERCISES.PUSHUP]: 8.0,
     [EXERCISES.SQUAT]: 5.0,
@@ -10,41 +28,11 @@ const MET_VALUES = {
     [EXERCISES.JUMPING_JACK]: 14.0
 };
 
-// Time per rep estimates
-const TIME_PER_REP = {
-    [EXERCISES.PUSHUP]: 6,
-    [EXERCISES.SQUAT]: 6,
-    [EXERCISES.BICEP_CURL]: 4,
-    [EXERCISES.JUMPING_JACK]: 2
-};
-
-// Squat phase constants
-const SQUAT_PHASES = {
-    STANDING: 'STANDING',
-    DESCENT: 'DESCENT',
-    BOTTOM: 'BOTTOM',
-    ASCENT: 'ASCENT'
-};
-
-// Helper to get voice settings
-const getVoiceSettings = () => {
-    try {
-        const settings = JSON.parse(localStorage.getItem('fitai_settings') || '{}');
-        return {
-            repCount: settings.voiceRepCount !== false,
-            formTips: settings.voiceFormTips !== false
-        };
-    } catch {
-        return { repCount: true, formTips: true };
-    }
-};
-
-// Text-to-Speech helper
-const speak = (text, rate = 1.2) => {
+const speak = (text, rate = 1.1) => {
     if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
         const utterance = new SpeechSynthesisUtterance(text);
         utterance.rate = rate;
-        utterance.pitch = 1;
         window.speechSynthesis.speak(utterance);
     }
 };
@@ -52,605 +40,267 @@ const speak = (text, rate = 1.2) => {
 export function useExerciseCounter(landmarks, exerciseType, userWeight = 70) {
     const [reps, setReps] = useState(0);
     const [feedback, setFeedback] = useState("");
-    const [stage, setStage] = useState("UP");
+    const [stage, setStage] = useState("IDLE");
     const [currentAngle, setCurrentAngle] = useState(0);
     const [formWarning, setFormWarning] = useState("");
     const [calories, setCalories] = useState(0);
-    const [score, setScore] = useState(0);
+    const [score, setScore] = useState(100);
     const [isTooFast, setIsTooFast] = useState(false);
     const [errorCount, setErrorCount] = useState(0);
     const [goodReps, setGoodReps] = useState(0);
 
-    // Refs for internal state
-    const stageRef = useRef("UP");
+    // Refs for state machine
+    const stageRef = useRef("IDLE");
     const repsRef = useRef(0);
-    const lastFeedbackTime = useRef(0);
-    const lastAudioTime = useRef(0);
-    const lastRepAudioTime = useRef(0);
-    const previousLandmarks = useRef(null);
-    const alertCount = useRef(0);
-    const startTime = useRef(Date.now());
-
-    // Calorie tracking refs
+    const repErrors = useRef(new Set());
+    const criticalErrorsRef = useRef(new Set()); // Errors that BLOCK the rep from counting
+    const minAngleReached = useRef(180);
     const repStartTime = useRef(0);
+    const lastAngle = useRef(180);
+    const smoothedAngleRef = useRef(180);
+    const lastTime = useRef(0);
     const accumulatedCalories = useRef(0);
 
-    // Speed detection refs
-    const lastAngleRef = useRef(0);
-    const lastFrameTimeRef = useRef(Date.now());
-    const fastFrameCount = useRef(0);
+    // Speed Tracking
+    const fastFrames = useRef(0);
 
-    // Squat specific refs
-    const squatPhase = useRef(SQUAT_PHASES.STANDING);
-    const angleHistory = useRef([]);
-    const phaseFrameCount = useRef(0);
-    const postureScoreHistory = useRef([]);
-    const lowPostureFrameCount = useRef(0);
-    const lastErrorTime = useRef(0);
-    const lastErrorCountTime = useRef(0);
+    const checkFullBodyInFrame = useCallback((lms, exercise) => {
+        if (!lms) return false;
+        const confidence = EXERCISE_THRESHOLDS.GLOBAL.MIN_CONFIDENCE;
 
-    // Helper: Update feedback with cooldown
-    const updateFeedback = useCallback((msg, isWarning = false) => {
-        const now = Date.now();
-        if (msg !== feedback || (isWarning && now - lastFeedbackTime.current > 2000)) {
-            setFeedback(msg);
-            if (isWarning) {
-                setFormWarning(msg);
-                // Count form errors (with cooldown to avoid counting the same error multiple times)
-                if (now - lastErrorCountTime.current > 2000) {
-                    setErrorCount(prev => prev + 1);
-                    lastErrorCountTime.current = now;
-                }
-            }
-            lastFeedbackTime.current = now;
-        }
-    }, [feedback]);
+        const checkSide = (indices) => indices.every(i => lms[i] && lms[i].visibility > confidence);
 
-    // Helper: Speak feedback with cooldown
-    const speakFeedback = useCallback((text, cooldown = 3000) => {
-        const now = Date.now();
-        const settings = getVoiceSettings();
-        if (settings.formTips && now - lastAudioTime.current > cooldown) {
-            speak(text);
-            lastAudioTime.current = now;
-        }
-    }, []);
-
-    // Helper: Announce rep count
-    const announceRep = useCallback((count) => {
-        const settings = getVoiceSettings();
-        if (settings.repCount) {
-            speak(count.toString(), 1.5);
-        }
-    }, []);
-
-    // Helper: Check if full body is in frame
-    const checkFullBodyInFrame = useCallback((landmarks, exercise) => {
-        if (!landmarks) return false;
-
-        // For Bicep Curls, we only need upper body
         if (exercise === EXERCISES.BICEP_CURL) {
-            const upperBodyPoints = [11, 12, 13, 14, 15, 16, 23, 24];
-            return upperBodyPoints.every(i => landmarks[i] && landmarks[i].visibility > 0.5);
+            // Need at least one arm fully visible (Shoulder, Elbow, Wrist)
+            return checkSide([11, 13, 15]) || checkSide([12, 14, 16]);
+        } else if (exercise === EXERCISES.SQUAT) {
+            // Need at least one side of the body down to ankle
+            return checkSide([11, 23, 25, 27]) || checkSide([12, 24, 26, 28]);
+        } else if (exercise === EXERCISES.PUSHUP) {
+            // Need arm and body
+            return checkSide([11, 13, 15, 23, 27]) || checkSide([12, 14, 16, 24, 28]);
+        } else if (exercise === EXERCISES.JUMPING_JACK) {
+            return checkSide([11, 12, 15, 16, 27, 28]);
         }
-
-        // For others, we need full body
-        const essentialPoints = [11, 12, 23, 24, 27, 28];
-        return essentialPoints.every(i => landmarks[i] && landmarks[i].visibility > 0.5);
+        return true;
     }, []);
 
-    // Helper: Check if landmarks are unstable
-    const isLandmarkUnstable = useCallback((landmarks) => {
-        if (!previousLandmarks.current) {
-            previousLandmarks.current = landmarks;
-            return false;
-        }
-
-        let totalMotion = 0;
-        const pointsToCheck = [11, 12, 23, 24]; // Shoulders and hips
-
-        pointsToCheck.forEach(i => {
-            const prev = previousLandmarks.current[i];
-            const curr = landmarks[i];
-            if (prev && curr) {
-                const dx = curr.x - prev.x;
-                const dy = curr.y - prev.y;
-                totalMotion += Math.sqrt(dx * dx + dy * dy);
-            }
-        });
-
-        previousLandmarks.current = landmarks;
-        return (totalMotion / pointsToCheck.length) > EXERCISE_THRESHOLDS.GLOBAL.MOVEMENT_THRESHOLD;
-    }, []);
-
-    // Helper: Smooth angle
-    const getSmoothedAngle = useCallback((newAngle) => {
-        angleHistory.current.push(newAngle);
-        if (angleHistory.current.length > EXERCISE_THRESHOLDS.GLOBAL.SMOOTHING_WINDOW) {
-            angleHistory.current.shift();
-        }
-        return angleHistory.current.reduce((a, b) => a + b, 0) / angleHistory.current.length;
-    }, []);
-
-    // Helper: Calculate squat posture
-    const calculateSquatPosture = useCallback((landmarks, side, kneeAngle) => {
-        const shoulder = side === 'left' ? landmarks[11] : landmarks[12];
-        const hip = side === 'left' ? landmarks[23] : landmarks[24];
-        const ankle = side === 'left' ? landmarks[27] : landmarks[28];
-
-        // 1. Depth Score
-        const targetDepth = EXERCISE_THRESHOLDS.SQUAT.ANGLES.TARGET_DEPTH;
-        const depthScore = Math.max(0, 1 - Math.abs(kneeAngle - targetDepth) / EXERCISE_THRESHOLDS.SQUAT.SCORES.DEPTH_TOLERANCE);
-
-        // 2. Alignment Score (Knee over toes)
-        const knee = side === 'left' ? landmarks[25] : landmarks[26];
-        const alignmentScore = Math.max(0, 1 - Math.abs(knee.x - ankle.x) * EXERCISE_THRESHOLDS.SQUAT.SCORES.ALIGNMENT_STRICTNESS);
-
-        // 3. Spine Score (Back straightness)
-        const spineAngle = calculateAngle(shoulder, hip, ankle);
-        const spineScore = Math.max(0, 1 - Math.abs(180 - spineAngle) / EXERCISE_THRESHOLDS.SQUAT.SCORES.SPINE_STRICTNESS);
-
-        const aggregate = (depthScore + alignmentScore + spineScore) / 3;
-
-        let lowestComponent = 'depth';
-        if (alignmentScore < depthScore && alignmentScore < spineScore) lowestComponent = 'alignment';
-        if (spineScore < depthScore && spineScore < alignmentScore) lowestComponent = 'spine';
-
-        return { aggregate, lowestComponent };
-    }, []);
-
-    // Calculate calories dynamically (must be defined FIRST)
-    const calculateDynamicCalories = useCallback((durationSeconds, formQualityScore = 1.0) => {
-        let met = MET_VALUES[exerciseType] || 4.0;
-
-        // Dynamic MET adjustments
-        if (durationSeconds > 2.0) met += 0.5;
-        if (formQualityScore > 0.8) met += 0.5;
-        if (formWarning) met -= 1.0;
-
-        const caloriesForRep = (Math.max(1, met) * userWeight * 0.0175) * (durationSeconds / 60);
+    const calculateDynamicCalories = useCallback((duration) => {
+        const met = MET_VALUES[exerciseType] || 4.0;
+        const caloriesForRep = (Math.max(1, met) * userWeight * 0.0175) * (duration / 60);
         accumulatedCalories.current += caloriesForRep;
         return accumulatedCalories.current;
-    }, [exerciseType, userWeight, formWarning]);
+    }, [exerciseType, userWeight]);
 
-    // Helper: Calculate calories (wrapper for dynamic calculation)
-    const calculateCalories = useCallback(() => {
-        const duration = (Date.now() - repStartTime.current) / 1000;
-        return calculateDynamicCalories(duration);
-    }, [calculateDynamicCalories]);
-
-    // Reset state when exercise changes
     useEffect(() => {
-        stageRef.current = "UP";
+        // Reset state on exercise change
+        stageRef.current = "IDLE";
         repsRef.current = 0;
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         setReps(0);
-        setStage("UP");
-        setFeedback("");
+        setStage("IDLE");
+        setScore(100);
         setFormWarning("");
-        setCurrentAngle(0);
+        setFeedback("");
         setCalories(0);
-        setScore(0);
-        setIsTooFast(false);
-        setErrorCount(0);
-        setGoodReps(0);
-        previousLandmarks.current = null;
-        alertCount.current = 0;
-        startTime.current = Date.now();
-
-        // Reset squat-specific state
-        squatPhase.current = SQUAT_PHASES.STANDING;
-        angleHistory.current = [];
-        phaseFrameCount.current = 0;
-        postureScoreHistory.current = [];
-        lowPostureFrameCount.current = 0;
-        lastErrorTime.current = 0;
-
-        // Reset speed state
-        lastAngleRef.current = 0;
-        lastFrameTimeRef.current = Date.now();
-        fastFrameCount.current = 0;
+        repErrors.current.clear();
+        criticalErrorsRef.current.clear();
+        minAngleReached.current = 180;
+        smoothedAngleRef.current = 180;
     }, [exerciseType]);
 
     useEffect(() => {
         if (!landmarks || !exerciseType) return;
 
-        // Check full body visibility
         if (!checkFullBodyInFrame(landmarks, exerciseType)) {
-            updateFeedback("Position yourself in frame");
+            // eslint-disable-next-line react-hooks/set-state-in-effect
+            setFeedback("Please position yourself fully in frame");
             return;
         }
 
-        // Check stability
-        if (isLandmarkUnstable(landmarks)) {
-            return;
+        // BIOMECHANICS: Instantaneous errors & metrics
+        const { errors, metrics } = analyzeForm(landmarks, exerciseType);
+        const rawAngle = metrics.depthAngle;
+
+        // Apply Exponential Moving Average (EMA) to smooth out camera jitter
+        if (stageRef.current === "IDLE" && smoothedAngleRef.current === 180 && rawAngle > 0 && rawAngle !== 180) {
+            smoothedAngleRef.current = rawAngle;
+        } else {
+            smoothedAngleRef.current = (rawAngle * 0.45) + (smoothedAngleRef.current * 0.55);
         }
 
-        const config = EXERCISE_CONFIG[exerciseType];
-        if (!config) {
-            console.log("No config found for exercise:", exerciseType);
-            return;
-        }
-
-        // --- ADVANCED SQUAT LOGIC ---
-        if (exerciseType === EXERCISES.SQUAT) {
-            const leftPoints = config.keypoints.left.map(i => landmarks[i]);
-            const rightPoints = config.keypoints.right.map(i => landmarks[i]);
-
-            const leftVis = leftPoints.reduce((acc, p) => acc + (p?.visibility || 0), 0) / leftPoints.length;
-            const rightVis = rightPoints.reduce((acc, p) => acc + (p?.visibility || 0), 0) / rightPoints.length;
-
-            let side = null;
-            if (leftVis > rightVis && leftVis > 0.7) {
-                side = 'left';
-            } else if (rightVis > 0.7) {
-                side = 'right';
-            }
-
-            if (!side || leftPoints.some(p => !p || p.visibility < 0.7)) {
-                updateFeedback("Position yourself in frame");
-                return;
-            }
-
-            // Calculate knee angle with smoothing
-            const hip = side === 'left' ? landmarks[23] : landmarks[24];
-            const knee = side === 'left' ? landmarks[25] : landmarks[26];
-            const ankle = side === 'left' ? landmarks[27] : landmarks[28];
-
-            const rawKneeAngle = calculateAngle(hip, knee, ankle);
-            const smoothedKneeAngle = getSmoothedAngle(rawKneeAngle);
-            setCurrentAngle(Math.round(smoothedKneeAngle));
-
-            // --- SPEED DETECTION (SQUAT) ---
-            const now = Date.now();
-            const deltaTime = (now - lastFrameTimeRef.current) / 1000; // Seconds
-
-            if (deltaTime > 0.05) { // Update every ~50ms
-                const deltaAngle = Math.abs(smoothedKneeAngle - lastAngleRef.current);
-                const velocity = deltaAngle / deltaTime; // Degrees per second
-                const threshold = EXERCISE_THRESHOLDS.SPEED[EXERCISES.SQUAT];
-
-                if (velocity > threshold) {
-                    fastFrameCount.current += 1;
-                } else {
-                    fastFrameCount.current = Math.max(0, fastFrameCount.current - 1);
-                }
-
-                if (fastFrameCount.current >= EXERCISE_THRESHOLDS.GLOBAL.SPEED_PERSISTENCE) {
-                    setIsTooFast(true);
-                    updateFeedback("Too fast! Slow down.", true);
-                    speakFeedback("Too fast");
-                } else if (fastFrameCount.current === 0) {
-                    setIsTooFast(false);
-                }
-
-                lastAngleRef.current = smoothedKneeAngle;
-                lastFrameTimeRef.current = now;
-            }
-
-            // Phase detection with persistence
-            const currentPhase = squatPhase.current;
-            const squatConfig = EXERCISE_THRESHOLDS.SQUAT.ANGLES;
-
-            if (currentPhase === SQUAT_PHASES.STANDING) {
-                if (smoothedKneeAngle < squatConfig.STANDING - 5) {
-                    phaseFrameCount.current++;
-                    if (phaseFrameCount.current >= EXERCISE_THRESHOLDS.GLOBAL.PHASE_PERSISTENCE) {
-                        squatPhase.current = SQUAT_PHASES.DESCENT;
-                        setStage("DESCENT");
-                        repStartTime.current = Date.now();
-                        phaseFrameCount.current = 0;
-                    }
-                } else {
-                    phaseFrameCount.current = 0;
-                }
-            } else if (currentPhase === SQUAT_PHASES.DESCENT) {
-                if (smoothedKneeAngle < squatConfig.BOTTOM_MAX) {
-                    phaseFrameCount.current++;
-                    if (phaseFrameCount.current >= EXERCISE_THRESHOLDS.GLOBAL.PHASE_PERSISTENCE) {
-                        squatPhase.current = SQUAT_PHASES.BOTTOM;
-                        setStage("BOTTOM");
-                        phaseFrameCount.current = 0;
-                    }
-                } else {
-                    phaseFrameCount.current = 0;
-                }
-            } else if (currentPhase === SQUAT_PHASES.BOTTOM) {
-                // Evaluate posture at bottom
-                const postureScores = calculateSquatPosture(landmarks, side, smoothedKneeAngle);
-
-                // Add to history for smoothing
-                postureScoreHistory.current.push(postureScores.aggregate);
-                if (postureScoreHistory.current.length > EXERCISE_THRESHOLDS.GLOBAL.SMOOTHING_WINDOW) {
-                    postureScoreHistory.current.shift();
-                }
-                const avgPostureScore = postureScoreHistory.current.reduce((a, b) => a + b, 0) / postureScoreHistory.current.length;
-
-                // Track low posture persistence
-                if (avgPostureScore < EXERCISE_THRESHOLDS.SQUAT.FEEDBACK.MIN_SCORE) {
-                    lowPostureFrameCount.current++;
-                } else {
-                    lowPostureFrameCount.current = 0;
-                }
-
-                // Provide feedback with cooldown
-                const now = Date.now();
-                if (lowPostureFrameCount.current >= EXERCISE_THRESHOLDS.GLOBAL.POSTURE_PERSISTENCE &&
-                    now - lastErrorTime.current > EXERCISE_THRESHOLDS.GLOBAL.ERROR_COOLDOWN) {
-
-                    const component = postureScores.lowestComponent;
-                    let message = "";
-
-                    if (component === 'depth') {
-                        message = smoothedKneeAngle > squatConfig.TARGET_DEPTH + EXERCISE_THRESHOLDS.SQUAT.FEEDBACK.DEPTH_OFFSET ?
-                            "Go deeper!" : "Too deep - keep hips higher!";
-                    } else if (component === 'alignment') {
-                        message = "Keep your knees aligned with your feet!";
-                    } else if (component === 'spine') {
-                        message = "Keep your chest up and back straight!";
-                    }
-
-                    updateFeedback(message, true);
-                    speakFeedback(message);
-                    lastErrorTime.current = now;
-                    lowPostureFrameCount.current = 0;
-                } else if (lowPostureFrameCount.current === 0) {
-                    setFormWarning("");
-                }
-
-                // Transition to ascent
-                if (smoothedKneeAngle > squatConfig.BOTTOM_MAX + 10) {
-                    phaseFrameCount.current++;
-                    if (phaseFrameCount.current >= EXERCISE_THRESHOLDS.GLOBAL.PHASE_PERSISTENCE) {
-                        squatPhase.current = SQUAT_PHASES.ASCENT;
-                        setStage("ASCENT");
-                        phaseFrameCount.current = 0;
-                        postureScoreHistory.current = [];
-                        lowPostureFrameCount.current = 0;
-                    }
-                } else {
-                    phaseFrameCount.current = 0;
-                }
-            } else if (currentPhase === SQUAT_PHASES.ASCENT) {
-                if (smoothedKneeAngle > squatConfig.STANDING) {
-                    phaseFrameCount.current++;
-                    if (phaseFrameCount.current >= EXERCISE_THRESHOLDS.GLOBAL.PHASE_PERSISTENCE) {
-                        squatPhase.current = SQUAT_PHASES.STANDING;
-                        setStage("STANDING");
-                        phaseFrameCount.current = 0;
-
-                        // Count rep with duration-based calories
-                        repsRef.current += 1;
-                        setReps(repsRef.current);
-                        if (!formWarning) setGoodReps(prev => prev + 1);
-
-                        const repDuration = (Date.now() - repStartTime.current) / 1000;
-                        const newCalories = calculateDynamicCalories(repDuration, 1.0);
-                        setCalories(newCalories);
-                        setScore(repsRef.current);
-
-                        updateFeedback("Good rep!");
-                        announceRep(repsRef.current);
-                    }
-                } else {
-                    phaseFrameCount.current = 0;
-                }
-            }
-
-            return;
-        }
-
-        // --- JUMPING JACKS ---
-        if (exerciseType === EXERCISES.JUMPING_JACK) {
-            const leftShoulder = landmarks[11];
-            const rightShoulder = landmarks[12];
-            const leftWrist = landmarks[15];
-            const rightWrist = landmarks[16];
-
-            if (leftShoulder?.visibility > 0.5 && rightShoulder?.visibility > 0.5 &&
-                leftWrist?.visibility > 0.5 && rightWrist?.visibility > 0.5) {
-
-                const handsUp = leftWrist.y < leftShoulder.y && rightWrist.y < rightShoulder.y;
-                const handsDown = leftWrist.y > leftShoulder.y && rightWrist.y > rightShoulder.y;
-
-                if (handsDown) {
-                    alertCount.current += 1;
-                } else if (handsUp) {
-                    alertCount.current = 0;
-                }
-
-                if (alertCount.current >= 180) {
-                    updateFeedback("Keep it going. Don't stop.", true);
-                    speakFeedback("Keep it going");
-                    alertCount.current = 0;
-                } else {
-                    setFormWarning("");
-                }
-
-                if (handsUp && stageRef.current === "DOWN") {
-                    stageRef.current = "UP";
-                    setStage("UP");
-                    repsRef.current += 1;
-                    setReps(repsRef.current);
-                    if (!formWarning) setGoodReps(prev => prev + 1);
-
-                    // Calculate rep duration and update calories
-                    const repDuration = (Date.now() - repStartTime.current) / 1000;
-                    const newCalories = calculateDynamicCalories(repDuration, 1.0);
-                    setCalories(newCalories);
-                    setScore(repsRef.current);
-                    updateFeedback("Good!");
-                    announceRep(repsRef.current);
-                } else if (handsDown && stageRef.current === "UP") {
-                    stageRef.current = "DOWN";
-                    setStage("DOWN");
-                    repStartTime.current = Date.now(); // Start timing the rep
-                }
-            }
-            return;
-        }
-
-        // --- REPETITION EXERCISES (Pushup, Bicep Curl) ---
-        if (!config.keypoints) return;
-
-        const leftPoints = config.keypoints.left.map(i => landmarks[i]);
-        const rightPoints = config.keypoints.right.map(i => landmarks[i]);
-
-        const leftVis = leftPoints.reduce((acc, p) => acc + (p?.visibility || 0), 0) / leftPoints.length;
-        const rightVis = rightPoints.reduce((acc, p) => acc + (p?.visibility || 0), 0) / rightPoints.length;
-
-        let activePoints = null;
-        let side = null;
-
-        if (leftVis > rightVis && leftVis > 0.5) {
-            activePoints = leftPoints;
-            side = 'left';
-        } else if (rightVis > 0.5) {
-            activePoints = rightPoints;
-            side = 'right';
-        }
-
-        if (!activePoints || activePoints.some(p => !p)) {
-            updateFeedback("Position yourself in frame");
-            return;
-        }
-
-        // Calculate main angle
-        const angle = calculateAngle(activePoints[0], activePoints[1], activePoints[2]);
+        const angle = smoothedAngleRef.current;
         setCurrentAngle(Math.round(angle));
 
-        // --- SPEED DETECTION (GENERIC) ---
+        const thresholds = EXERCISE_THRESHOLDS[exerciseType]?.PHASES;
+        if (!thresholds) return;
+
         const now = Date.now();
-        const deltaTime = (now - lastFrameTimeRef.current) / 1000; // Seconds
+        const deltaTime = (now - lastTime.current) / 1000;
 
-        if (deltaTime > 0.05) { // Update every ~50ms
-            const deltaAngle = Math.abs(angle - lastAngleRef.current);
-            const velocity = deltaAngle / deltaTime; // Degrees per second
-            const threshold = EXERCISE_THRESHOLDS.SPEED[exerciseType] || 200;
-
-            if (exerciseType === EXERCISES.BICEP_CURL) {
-                console.log("Speed Debug:", {
-                    velocity: velocity.toFixed(2),
-                    threshold,
-                    fastFrames: fastFrameCount.current,
-                    isTooFast,
-                    deltaAngle: deltaAngle.toFixed(2),
-                    deltaTime: deltaTime.toFixed(3)
-                });
-            }
-
-            if (velocity > threshold) {
-                fastFrameCount.current += 1;
+        // Speed check (Tempo consistency)
+        if (deltaTime > 0 && deltaTime < 1.0 && stageRef.current !== "IDLE") {
+            const speed = Math.abs(angle - lastAngle.current) / Math.max(0.01, deltaTime);
+            if (speed > EXERCISE_THRESHOLDS.SPEED[exerciseType]) {
+                fastFrames.current++;
+                if (fastFrames.current > EXERCISE_THRESHOLDS.GLOBAL.SPEED_PERSISTENCE) {
+                    repErrors.current.add("Fast tempo (Control the movement)");
+                    setIsTooFast(true);
+                }
             } else {
-                fastFrameCount.current = Math.max(0, fastFrameCount.current - 1);
+                fastFrames.current = 0;
+                if (stageRef.current !== "IDLE") setIsTooFast(false);
             }
-
-            if (fastFrameCount.current >= EXERCISE_THRESHOLDS.GLOBAL.SPEED_PERSISTENCE) {
-                setIsTooFast(true);
-                updateFeedback("Too fast! Slow down.", true);
-                speakFeedback("Too fast");
-            } else if (fastFrameCount.current === 0) {
-                setIsTooFast(false);
-            }
-
-            lastAngleRef.current = angle;
-            lastFrameTimeRef.current = now;
         }
 
-        // --- FORM CHECKS ---
-        let formIssue = null;
+        lastAngle.current = angle;
+        lastTime.current = now;
 
-        // PUSHUP form checks
-        if (exerciseType === EXERCISES.PUSHUP) {
-            const shoulder = side === 'left' ? landmarks[11] : landmarks[12];
-            const hip = side === 'left' ? landmarks[23] : landmarks[24];
-            const ankle = side === 'left' ? landmarks[27] : landmarks[28];
-            const wrist = side === 'left' ? landmarks[15] : landmarks[16];
-
-            if (wrist && wrist.y < EXERCISE_THRESHOLDS.PUSHUP.FEEDBACK.WRIST_Y_THRESHOLD) {
-                formIssue = "Place hands on the floor!";
-            }
-
-            if (!formIssue && shoulder?.visibility > 0.5 && hip?.visibility > 0.5 && ankle?.visibility > 0.5) {
-                const bodyAngle = calculateAngle(shoulder, hip, ankle);
-                if (bodyAngle < EXERCISE_THRESHOLDS.PUSHUP.ANGLES.BODY_ALIGNMENT) {
-                    alertCount.current += 1;
-                } else {
-                    alertCount.current = 0;
+        // Collect continuous errors if we are in a rep
+        if (stageRef.current !== "IDLE") {
+            errors.forEach(e => {
+                repErrors.current.add(e);
+                const criticals = CRITICAL_ERRORS[exerciseType] || [];
+                if (criticals.some(c => e.includes(c))) {
+                    criticalErrorsRef.current.add(e);
                 }
-
-                if (alertCount.current >= EXERCISE_THRESHOLDS.GLOBAL.ALERT_THRESHOLD) {
-                    formIssue = "Keep your body in a straight line from head to heels.";
-                    alertCount.current = 0;
-                }
-            }
-        }
-
-        // BICEP CURL form checks
-        if (exerciseType === EXERCISES.BICEP_CURL) {
-            const shoulder = side === 'left' ? landmarks[11] : landmarks[12];
-            const elbow = side === 'left' ? landmarks[13] : landmarks[14];
-            const hip = side === 'left' ? landmarks[23] : landmarks[24];
-
-            if (shoulder?.visibility > 0.5 && elbow?.visibility > 0.5 && hip?.visibility > 0.5) {
-                const elbowAngle = calculateAngle(elbow, shoulder, hip);
-                if (elbowAngle > EXERCISE_THRESHOLDS.BICEP_CURL.ANGLES.ELBOW_FLARE) {
-                    formIssue = "Keep elbow close to body!";
-                }
-            }
-        }
-
-        // Report form issue
-        if (formIssue) {
-            updateFeedback(formIssue, true);
-            speakFeedback(formIssue, 4000);
-        } else {
-            setFormWarning("");
-        }
-
-        // --- STATE MACHINE FOR REP COUNTING ---
-        // --- STATE MACHINE FOR REP COUNTING ---
-        const thresholds = EXERCISE_THRESHOLDS[exerciseType]?.ANGLES;
-        const downThreshold = thresholds?.DOWN || config.thresholds.down;
-        const upThreshold = thresholds?.UP || config.thresholds.up;
-
-        if (exerciseType === EXERCISES.BICEP_CURL) {
-            console.log("Bicep Debug:", {
-                angle,
-                stage: stageRef.current,
-                downThreshold,
-                upThreshold,
-                thresholdsFound: !!thresholds
             });
         }
 
-        if (stageRef.current === "UP") {
-            if (angle < downThreshold) {
-                stageRef.current = "DOWN";
-                setStage("DOWN");
-                repStartTime.current = Date.now(); // Start timing the rep
-                if (!formIssue) {
-                    updateFeedback("Good depth!");
-                }
-            }
-        } else if (stageRef.current === "DOWN") {
-            if (angle > upThreshold) {
-                stageRef.current = "UP";
-                setStage("UP");
-                repsRef.current += 1;
-                setReps(repsRef.current);
-                if (!formIssue && !formWarning) setGoodReps(prev => prev + 1);
+        // Determine direction of movement for the metric
+        const isUpwardMetric = thresholds.PEAK > thresholds.START;
 
-                // Calculate rep duration and update calories
-                const repDuration = (Date.now() - repStartTime.current) / 1000;
-                const newCalories = calculateDynamicCalories(repDuration, 1.0);
-                setCalories(newCalories);
-                setScore(repsRef.current);
-                updateFeedback("Good rep!");
-                announceRep(repsRef.current);
+        // Track Minimum/Maximum Angle Reached during rep for depth analysis
+        if (stageRef.current !== "IDLE") {
+            if (isUpwardMetric) {
+                if (angle > minAngleReached.current) minAngleReached.current = angle;
+            } else {
+                if (angle < minAngleReached.current) minAngleReached.current = angle;
             }
         }
 
-    }, [landmarks, exerciseType, updateFeedback, speakFeedback, announceRep, checkFullBodyInFrame, isLandmarkUnstable, calculateCalories, getSmoothedAngle, calculateSquatPosture]);
+        // STATE MACHINE
+        // 1. Start Rep (Transition IDLE -> ACTIVE/CONCENTRIC)
+        if (stageRef.current === "IDLE") {
+            const startThresh = thresholds.START;
+            const crossedStart = isUpwardMetric ? angle > startThresh : angle < startThresh;
+
+            if (crossedStart) {
+                console.log(`Rep started! Exercise: ${exerciseType}, Current Angle: ${angle}`);
+                stageRef.current = "ACTIVE";
+                setStage("ACTIVE");
+                setIsTooFast(false);
+                repStartTime.current = now;
+                minAngleReached.current = angle;
+                repErrors.current.clear();
+                criticalErrorsRef.current.clear(); // Reset critical errors for new rep
+                setFeedback("Rep started...");
+                setFormWarning("");
+                console.log(`STAGE TRANSITION: IDLE -> ACTIVE for ${exerciseType}`);
+            }
+        }
+        // 2. Active Rep Tracking -> Reaching Peak
+        else if (stageRef.current === "ACTIVE") {
+            const peakThresh = thresholds.PEAK;
+            const reachedPeak = isUpwardMetric ? angle >= peakThresh : angle <= peakThresh;
+
+            if (reachedPeak) {
+                console.log(`Peak reached! Exercise: ${exerciseType}, Current Angle: ${angle}`);
+                stageRef.current = "PEAK";
+                setStage("PEAK");
+                console.log(`STAGE TRANSITION: ACTIVE -> PEAK for ${exerciseType}`);
+            } else {
+                // Stay in ACTIVE until PEAK or timeout. 
+                // Don't auto-cancel on shallow movement to prevent false cancellations.
+                if (now - repStartTime.current > 15000) { // 15s timeout
+                    stageRef.current = "IDLE";
+                    setStage("IDLE");
+                    setFeedback("Rep timed out - Keep moving!");
+                    console.log(`STAGE TRANSITION: ACTIVE -> IDLE (Timeout) for ${exerciseType}`);
+                }
+            }
+        }
+        // 3. Return to Start (Completion of Rep)
+        else if (stageRef.current === "PEAK") {
+            const finishMargin = 15;
+            const finishThresh = isUpwardMetric ? (thresholds.START + finishMargin) : (thresholds.START - finishMargin);
+            const returnedToStart = isUpwardMetric ? (angle <= finishThresh) : (angle >= finishThresh);
+
+            if (returnedToStart) {
+                console.log(`Rep finished! Exercise: ${exerciseType}, Total Reps: ${repsRef.current + 1}`);
+
+                // Check for critical form violations — these CANCEL the rep entirely
+                const criticalsFired = Array.from(criticalErrorsRef.current);
+                if (criticalsFired.length > 0) {
+                    // Rep does NOT count — bad posture detected
+                    stageRef.current = "IDLE";
+                    setStage("IDLE");
+                    setIsTooFast(false);
+                    criticalErrorsRef.current.clear();
+                    repErrors.current.clear();
+                    setScore(0);
+                    setErrorCount(prev => prev + 1);
+                    setFeedback("❌ Rep not counted — fix your form!");
+                    setFormWarning(`Critical: ${criticalsFired[0]}`);
+                    speak(`Form error. ${criticalsFired[0]}`, 1.2);
+                    console.log(`Rep BLOCKED due to critical error: ${criticalsFired[0]}`);
+                    return;
+                }
+
+                // Evaluate rep quality (minor errors)
+                let repScore = 100;
+
+                // Add depth error if available
+                const depthMin = EXERCISE_THRESHOLDS[exerciseType]?.ERRORS?.DEPTH_MIN_ALLOWABLE;
+                if (depthMin) {
+                    const depthFailed = isUpwardMetric
+                        ? minAngleReached.current < depthMin
+                        : minAngleReached.current > depthMin;
+
+                    if (depthFailed) repErrors.current.add("Half rep (Insufficient depth)");
+                }
+
+                if (repErrors.current.size > 0) {
+                    repScore = Math.max(0, 100 - (repErrors.current.size * 15));
+                }
+
+                // Prepare output
+                const errorArr = Array.from(repErrors.current);
+
+                // State updates
+                repsRef.current++;
+                setReps(repsRef.current);
+                setScore(repScore);
+
+                if (repScore >= 85) {
+                    setGoodReps(prev => prev + 1);
+                    setFeedback(`Excellent! Form Score: ${repScore}/100`);
+                    setFormWarning("");
+                    speak(repsRef.current.toString(), 1.5);
+                } else {
+                    setErrorCount(prev => prev + 1);
+                    setFeedback(`Score: ${repScore}/100`);
+                    setFormWarning(`Issues: ${errorArr.join(' • ')}`);
+                    speak(`${repsRef.current}. ${errorArr[0]}`, 1.3);
+                }
+
+                // Calories
+                const duration = (now - repStartTime.current) / 1000;
+                setCalories(calculateDynamicCalories(duration));
+
+                // Reset for next
+                stageRef.current = "IDLE";
+                setStage("IDLE");
+                setIsTooFast(false);
+            } else if (now - repStartTime.current > 12000) {
+                stageRef.current = "IDLE";
+                setStage("IDLE");
+                setFeedback("Rep timed out");
+                setIsTooFast(false);
+            }
+        }
+
+    }, [landmarks, exerciseType, checkFullBodyInFrame, calculateDynamicCalories, isTooFast]);
 
     return { reps, feedback, stage, currentAngle, formWarning, calories, score, isTooFast, errorCount, goodReps };
 }

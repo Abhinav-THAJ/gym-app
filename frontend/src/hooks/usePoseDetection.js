@@ -130,6 +130,7 @@ export function usePoseDetection(videoRef, canvasRef) {
                 }
             }
         }
+        setIsLoaded(true);
         ctx.restore();
     }, [canvasRef, videoRef]);
 
@@ -141,7 +142,7 @@ export function usePoseDetection(videoRef, canvasRef) {
         });
 
         pose.setOptions({
-            modelComplexity: 1,
+            modelComplexity: 2,
             smoothLandmarks: true,
             enableSegmentation: false,
             smoothSegmentation: false,
@@ -151,7 +152,6 @@ export function usePoseDetection(videoRef, canvasRef) {
 
         pose.onResults(onResults);
         poseRef.current = pose;
-        setIsLoaded(true);
 
         if (videoRef.current && videoRef.current.video) {
             const camera = new Camera(videoRef.current.video, {
@@ -175,7 +175,7 @@ export function usePoseDetection(videoRef, canvasRef) {
             if (cameraRef.current) cameraRef.current.stop();
             if (poseRef.current) poseRef.current.close();
         };
-    }, [videoRef, onResults]);
+    }, [videoRef, onResults, FRAME_INTERVAL]);
 
     return { isLoaded, landmarks };
 }

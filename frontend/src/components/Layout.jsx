@@ -5,7 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { Button } from './ui/Button';
 
 export default function Layout({ children }) {
-    const { user, logout } = useAuth();
+    const { user } = useAuth();
     const location = useLocation();
     const navigate = useNavigate();
 
@@ -43,10 +43,10 @@ export default function Layout({ children }) {
                             <p className="text-xs text-zinc-500 truncate">{user?.email}</p>
                         </div>
                     </div>
-                    <Button variant="ghost" size="sm" onClick={logout} className="w-full justify-start text-zinc-400 hover:text-fitness-red hover:bg-fitness-red/10">
+                    {/* <Button variant="ghost" size="sm" onClick={logout} className="w-full justify-start text-zinc-400 hover:text-fitness-red hover:bg-fitness-red/10">
                         <LogOut className="w-4 h-4 mr-2" />
                         Log out
-                    </Button>
+                    </Button> */}
                 </div>
             </aside>
 

@@ -54,7 +54,7 @@ export const EXERCISE_THRESHOLDS = {
             TARGET_PEAK: 35   // Perfect squeeze angle
         },
         ERRORS: {
-            ELBOW_SWAY_TOLERANCE: 0.25,   // Max elbow drift (normalized by shoulder width)
+            ELBOW_SWAY_TOLERANCE: 0.45,   // Very relaxed elbow drift (was 0.25)
             SHOULDER_SHRUG_TOLERANCE: 0.04,// Shoulder diff
             DEPTH_MIN_ALLOWABLE: 90       // Half rep threshold
         }

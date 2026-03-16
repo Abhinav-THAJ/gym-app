@@ -325,22 +325,29 @@ export default function Workout() {
                         transition={{ type: 'spring', stiffness: 500, damping: 30 }}
                         className="absolute z-20 top-32 left-1/2 transform -translate-x-1/2 pointer-events-none"
                     >
-                        {/* Perfect rep — green */}
+                        {/* ✅ Perfect rep — green */}
                         {feedback.includes('Perfect') && (
                             <div className="bg-black/80 backdrop-blur-md border border-fitness-green/60 px-8 py-4 rounded-full text-xl font-bold text-fitness-green shadow-[0_0_30px_rgba(164,255,0,0.3)] flex items-center gap-3">
                                 <CheckCircle2 className="w-6 h-6 flex-shrink-0" />
                                 {feedback}
                             </div>
                         )}
-                        {/* Rep not counted — red */}
+                        {/* ⚠️ Rep counted with minor issues — amber */}
+                        {feedback.includes('watch your form') && (
+                            <div className="bg-amber-950/90 backdrop-blur-md border border-amber-500/60 px-8 py-4 rounded-full text-xl font-bold text-amber-300 shadow-[0_0_30px_rgba(245,158,11,0.3)] flex items-center gap-3">
+                                <AlertTriangle className="w-6 h-6 text-amber-400 flex-shrink-0" />
+                                {feedback}
+                            </div>
+                        )}
+                        {/* ❌ Rep blocked — red */}
                         {feedback.includes('not counted') && (
                             <div className="bg-red-950/90 backdrop-blur-md border border-red-500/70 px-8 py-4 rounded-full text-xl font-bold text-white shadow-[0_0_30px_rgba(220,38,38,0.4)] flex items-center gap-3">
                                 <AlertCircle className="w-6 h-6 text-red-400 flex-shrink-0" />
                                 {feedback}
                             </div>
                         )}
-                        {/* In progress / other — blue */}
-                        {!feedback.includes('Perfect') && !feedback.includes('not counted') && (
+                        {/* 🔄 In progress / other — blue */}
+                        {!feedback.includes('Perfect') && !feedback.includes('not counted') && !feedback.includes('watch your form') && (
                             <div className="bg-black/80 backdrop-blur-md border border-fitness-blue/50 px-8 py-4 rounded-full text-lg font-semibold text-fitness-blue shadow-[0_0_20px_rgba(0,245,234,0.2)] flex items-center gap-3">
                                 <Activity className="w-5 h-5 flex-shrink-0" />
                                 {feedback}

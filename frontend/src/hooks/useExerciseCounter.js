@@ -3,11 +3,33 @@ import { EXERCISES } from '../lib/poseUtils';
 import { analyzeForm } from '../lib/formAnalysis';
 import { EXERCISE_THRESHOLDS } from '../lib/exerciseThresholds';
 
+// ─── CRITICAL errors: these are major biomechanical violations ───
+// If any of these fire during a rep, the rep is BLOCKED
+const CRITICAL_ERRORS = {
+    [EXERCISES.BICEP_CURL]: [
+        'Body swinging',   // Torso/hip cheat
+        'Elbow swinging',  // Elbow drift
+    ],
+    [EXERCISES.SQUAT]: [
+        'Left knee caving in',
+        'Right knee caving in',
+        'Leaning too far forward',
+    ],
+    [EXERCISES.PUSHUP]: [
+        'Hips sagging',
+        'Hips too high',
+    ],
+    [EXERCISES.JUMPING_JACK]: [],
+};
+
+// Minor errors: detected and shown on screen, but do NOT block the rep
+// Everything NOT in CRITICAL_ERRORS is considered minor
+
 const MET_VALUES = {
     [EXERCISES.PUSHUP]: 8.0,
     [EXERCISES.SQUAT]: 5.0,
     [EXERCISES.BICEP_CURL]: 4.0,
-    [EXERCISES.JUMPING_JACK]: 14.0
+    [EXERCISES.JUMPING_JACK]: 14.0,
 };
 
 const speak = (text, rate = 1.1) => {
@@ -34,10 +56,8 @@ export function useExerciseCounter(landmarks, exerciseType, userWeight = 70) {
     // Refs for state machine
     const stageRef = useRef('IDLE');
     const repsRef = useRef(0);
-
-    // ALL errors seen during this rep (any error = rep blocked)
-    const repErrors = useRef(new Set());
-
+    const repErrors = useRef(new Set());           // ALL errors during rep
+    const criticalErrorsRef = useRef(new Set());   // CRITICAL errors only
     const minAngleReached = useRef(180);
     const repStartTime = useRef(0);
     const lastAngle = useRef(180);
@@ -45,8 +65,6 @@ export function useExerciseCounter(landmarks, exerciseType, userWeight = 70) {
     const lastTime = useRef(0);
     const accumulatedCalories = useRef(0);
     const fastFrames = useRef(0);
-
-    // Live warning: update immediately during active rep, throttled when idle
     const lastWarningTime = useRef(0);
 
     const checkFullBodyInFrame = useCallback((lms, exercise) => {
@@ -73,7 +91,7 @@ export function useExerciseCounter(landmarks, exerciseType, userWeight = 70) {
         return accumulatedCalories.current;
     }, [exerciseType, userWeight]);
 
-    // Reset everything when exercise changes
+    // Reset on exercise change
     useEffect(() => {
         stageRef.current = 'IDLE';
         repsRef.current = 0;
@@ -86,6 +104,7 @@ export function useExerciseCounter(landmarks, exerciseType, userWeight = 70) {
         setErrorCount(0);
         setGoodReps(0);
         repErrors.current.clear();
+        criticalErrorsRef.current.clear();
         minAngleReached.current = 180;
         smoothedAngleRef.current = 180;
         fastFrames.current = 0;
@@ -100,7 +119,7 @@ export function useExerciseCounter(landmarks, exerciseType, userWeight = 70) {
             return;
         }
 
-        // ── Biomechanics: get real-time errors & angle ──
+        // ── Get real-time errors & depth angle ──
         const { errors, metrics } = analyzeForm(landmarks, exerciseType);
         const rawAngle = metrics.depthAngle;
 
@@ -120,53 +139,59 @@ export function useExerciseCounter(landmarks, exerciseType, userWeight = 70) {
         const now = Date.now();
         const deltaTime = (now - lastTime.current) / 1000;
 
-        // ── Speed check ──
+        // ── Speed check (advisory — does NOT block rep) ──
         if (deltaTime > 0 && deltaTime < 1.0 && stageRef.current !== 'IDLE') {
             const speed = Math.abs(angle - lastAngle.current) / Math.max(0.01, deltaTime);
             if (speed > EXERCISE_THRESHOLDS.SPEED[exerciseType]) {
                 fastFrames.current++;
                 if (fastFrames.current > EXERCISE_THRESHOLDS.GLOBAL.SPEED_PERSISTENCE) {
-                    repErrors.current.add('Too fast — slow down & control the movement');
                     setIsTooFast(true);
                 }
             } else {
                 fastFrames.current = 0;
-                setIsTooFast(false);
+                if (stageRef.current !== 'IDLE') setIsTooFast(false);
             }
         }
 
         lastAngle.current = angle;
         lastTime.current = now;
 
-        // ── Collect errors during rep ──
+        // ── Collect errors during active rep ──
         const isInRep = stageRef.current !== 'IDLE';
         if (isInRep) {
-            errors.forEach(e => repErrors.current.add(e));
+            const criticals = CRITICAL_ERRORS[exerciseType] || [];
+            errors.forEach(e => {
+                repErrors.current.add(e);
+                // Classify as critical if it matches a known critical pattern
+                if (criticals.some(c => e.includes(c))) {
+                    criticalErrorsRef.current.add(e);
+                }
+            });
         }
 
         // ── Live real-time posture warning ──
-        // During an active rep: show errors immediately (no throttle)
-        // When idle: throttle to once per 1.5s to avoid flicker
+        // During active rep: show errors immediately (faster feedback)
+        // When idle: throttle to reduce flicker
         const nowLive = Date.now();
         if (errors.length > 0) {
-            const throttle = isInRep ? 800 : 1500;
+            const throttle = isInRep ? 800 : 2000;
             if (nowLive - lastWarningTime.current > throttle) {
                 setFormWarning(errors[0]);
                 lastWarningTime.current = nowLive;
-                // Speak the first error immediately during a rep
-                if (isInRep) {
+                // Speak critical errors immediately during rep
+                const criticals = CRITICAL_ERRORS[exerciseType] || [];
+                if (isInRep && criticals.some(c => errors[0].includes(c))) {
                     speak(errors[0], 1.2);
                 }
             }
         } else {
-            // Form looks correct — clear warning after short delay
             if (nowLive - lastWarningTime.current > 1000) {
                 setFormWarning('');
                 lastWarningTime.current = nowLive;
             }
         }
 
-        // ── Track extreme angle reached for depth check ──
+        // ── Track extreme angle for depth check ──
         const isUpwardMetric = thresholds.PEAK > thresholds.START;
         if (isInRep) {
             if (isUpwardMetric) {
@@ -192,13 +217,14 @@ export function useExerciseCounter(landmarks, exerciseType, userWeight = 70) {
                 repStartTime.current = now;
                 minAngleReached.current = angle;
                 repErrors.current.clear();
+                criticalErrorsRef.current.clear();
                 fastFrames.current = 0;
                 setFeedback('🔄 Rep in progress...');
                 setFormWarning('');
             }
         }
 
-        // 2. ACTIVE → PEAK: reached full range
+        // 2. ACTIVE → PEAK
         else if (stageRef.current === 'ACTIVE') {
             const peakThresh = thresholds.PEAK;
             const reachedPeak = isUpwardMetric ? angle >= peakThresh : angle <= peakThresh;
@@ -207,15 +233,15 @@ export function useExerciseCounter(landmarks, exerciseType, userWeight = 70) {
                 stageRef.current = 'PEAK';
                 setStage('PEAK');
             } else if (now - repStartTime.current > 15000) {
-                // 15s timeout
                 stageRef.current = 'IDLE';
                 setStage('IDLE');
                 repErrors.current.clear();
+                criticalErrorsRef.current.clear();
                 setFeedback('Rep timed out — keep moving!');
             }
         }
 
-        // 3. PEAK → IDLE: rep completes, evaluate quality
+        // 3. PEAK → IDLE: evaluate the completed rep
         else if (stageRef.current === 'PEAK') {
             const finishMargin = 15;
             const finishThresh = isUpwardMetric
@@ -226,7 +252,8 @@ export function useExerciseCounter(landmarks, exerciseType, userWeight = 70) {
                 : (angle >= finishThresh);
 
             if (returnedToStart) {
-                // ── Depth check: add error if half-rep ──
+
+                // ── Depth check: half rep is CRITICAL ──
                 const depthMin = EXERCISE_THRESHOLDS[exerciseType]?.ERRORS?.DEPTH_MIN_ALLOWABLE;
                 if (depthMin) {
                     const depthFailed = isUpwardMetric
@@ -234,42 +261,36 @@ export function useExerciseCounter(landmarks, exerciseType, userWeight = 70) {
                         : minAngleReached.current > depthMin;
                     if (depthFailed) {
                         repErrors.current.add('Half rep — go through full range of motion');
+                        criticalErrorsRef.current.add('Half rep — go through full range of motion');
                     }
                 }
 
-                const errorArr = Array.from(repErrors.current);
+                const criticalsFired = Array.from(criticalErrorsRef.current);
+                const allErrors = Array.from(repErrors.current);
 
                 // ══════════════════════════════════════════
-                //  ANY error = rep BLOCKED, not counted
+                //  CRITICAL error = rep BLOCKED
                 // ══════════════════════════════════════════
-                if (errorArr.length > 0) {
+                if (criticalsFired.length > 0) {
                     stageRef.current = 'IDLE';
                     setStage('IDLE');
                     setIsTooFast(false);
+                    criticalErrorsRef.current.clear();
                     repErrors.current.clear();
                     setScore(0);
                     setErrorCount(prev => prev + 1);
-
-                    // Show most important error prominently
-                    const topError = errorArr[0];
-                    setFeedback(`❌ Rep not counted!`);
-                    setFormWarning(`Fix: ${topError}`);
-                    speak(`Not counted. ${topError}`, 1.2);
+                    setFeedback('❌ Rep not counted!');
+                    setFormWarning(`Fix: ${criticalsFired[0]}`);
+                    speak(`Not counted. ${criticalsFired[0]}`, 1.2);
                     return;
                 }
 
                 // ══════════════════════════════════════════
-                //  PERFECT REP — zero errors, count it!
+                //  Minor errors only — rep COUNTS with warning
                 // ══════════════════════════════════════════
                 repsRef.current++;
                 setReps(repsRef.current);
-                setScore(100);
-                setGoodReps(prev => prev + 1);
-                setFeedback(`✅ Perfect! ${repsRef.current} rep${repsRef.current > 1 ? 's' : ''}`);
-                setFormWarning('');
-                speak(repsRef.current.toString(), 1.5);
 
-                // Calories only for counted reps
                 const duration = (now - repStartTime.current) / 1000;
                 setCalories(calculateDynamicCalories(duration));
 
@@ -277,10 +298,31 @@ export function useExerciseCounter(landmarks, exerciseType, userWeight = 70) {
                 setStage('IDLE');
                 setIsTooFast(false);
 
+                if (allErrors.length === 0) {
+                    // Perfect rep
+                    setScore(100);
+                    setGoodReps(prev => prev + 1);
+                    setFeedback(`✅ Perfect! Rep ${repsRef.current}`);
+                    setFormWarning('');
+                    speak(repsRef.current.toString(), 1.5);
+                } else {
+                    // Rep counted but minor form issues detected
+                    const repScore = Math.max(50, 100 - (allErrors.length * 12));
+                    setScore(repScore);
+                    setErrorCount(prev => prev + 1);
+                    setFeedback(`⚠️ Rep ${repsRef.current} — watch your form`);
+                    setFormWarning(`Tip: ${allErrors[0]}`);
+                    speak(`${repsRef.current}. ${allErrors[0]}`, 1.3);
+                }
+
+                repErrors.current.clear();
+                criticalErrorsRef.current.clear();
+
             } else if (now - repStartTime.current > 12000) {
                 stageRef.current = 'IDLE';
                 setStage('IDLE');
                 repErrors.current.clear();
+                criticalErrorsRef.current.clear();
                 setFeedback('Rep timed out');
                 setIsTooFast(false);
             }

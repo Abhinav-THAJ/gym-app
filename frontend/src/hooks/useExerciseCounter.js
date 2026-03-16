@@ -120,7 +120,12 @@ export function useExerciseCounter(landmarks, exerciseType, userWeight = 70) {
         }
 
         // ── Get real-time errors & depth angle ──
-        const { errors, metrics } = analyzeForm(landmarks, exerciseType);
+        const { errors: allErrors, metrics } = analyzeForm(landmarks, exerciseType);
+        
+        // Completely neglect slight/minor errors as requested by user
+        const criticalPatterns = CRITICAL_ERRORS[exerciseType] || [];
+        const errors = allErrors.filter(e => criticalPatterns.some(c => e.includes(c)));
+
         const rawAngle = metrics.depthAngle;
 
         // Smooth angle with EMA
@@ -286,7 +291,7 @@ export function useExerciseCounter(landmarks, exerciseType, userWeight = 70) {
                 }
 
                 // ══════════════════════════════════════════
-                //  Minor errors only — rep COUNTS with warning
+                //  Minor errors are neglected — rep COUNTS as Perfect
                 // ══════════════════════════════════════════
                 repsRef.current++;
                 setReps(repsRef.current);
@@ -298,22 +303,12 @@ export function useExerciseCounter(landmarks, exerciseType, userWeight = 70) {
                 setStage('IDLE');
                 setIsTooFast(false);
 
-                if (allErrors.length === 0) {
-                    // Perfect rep
-                    setScore(100);
-                    setGoodReps(prev => prev + 1);
-                    setFeedback(`✅ Perfect! Rep ${repsRef.current}`);
-                    setFormWarning('');
-                    speak(repsRef.current.toString(), 1.5);
-                } else {
-                    // Rep counted but minor form issues detected
-                    const repScore = Math.max(50, 100 - (allErrors.length * 12));
-                    setScore(repScore);
-                    setErrorCount(prev => prev + 1);
-                    setFeedback(`⚠️ Rep ${repsRef.current} — watch your form`);
-                    setFormWarning(`Tip: ${allErrors[0]}`);
-                    speak(`${repsRef.current}. ${allErrors[0]}`, 1.3);
-                }
+                // Any rep that makes it here is considered "Perfect" because we are ignoring slight errors
+                setScore(100);
+                setGoodReps(prev => prev + 1);
+                setFeedback(`✅ Perfect! Rep ${repsRef.current}`);
+                setFormWarning('');
+                speak(repsRef.current.toString(), 1.5);
 
                 repErrors.current.clear();
                 criticalErrorsRef.current.clear();

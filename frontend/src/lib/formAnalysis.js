@@ -216,7 +216,8 @@ const AnalysisModules = {
             if (shoulder && elbow && hip) {
                 // Elbow should not move forward of the shoulder on Y axis
                 const elbowForward = (shoulder.x - elbow.x) / shoulderWidth;
-                if (Math.abs(elbowForward) > 0.25) {
+                // Use config.ELBOW_SWAY_TOLERANCE (which we relaxed to 0.80) instead of hardcoded 0.25
+                if (Math.abs(elbowForward) > config.ELBOW_SWAY_TOLERANCE) {
                     errors.push("Elbow swinging – keep it pinned to your side");
                 }
             }
@@ -237,8 +238,9 @@ const AnalysisModules = {
             const hip = landmarks[sideTorso[1]];
             if (shoulder && hip) {
                 const leanAngle = Math.abs(shoulder.x - hip.x) / shoulderWidth;
-                if (leanAngle > 0.2) {
-                    errors.push("Body swinging – keep your back straight");
+                // Relaxed from 0.2 to 0.65 to allow significantly more body swing
+                if (leanAngle > 0.65) {
+                    errors.push("Body swinging – stay upright");
                 }
             }
         }

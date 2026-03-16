@@ -246,20 +246,40 @@ export default function Workout() {
                 </div>
             </div>
 
-            {/* Form Warning - Top Center */}
+            {/* Form Warning - Top Center (Real-time posture feedback) */}
             <AnimatePresence>
                 {formWarning && (
-                    <motion.div
-                        initial={{ opacity: 0, y: -50 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -50 }}
-                        className="absolute top-24 left-1/2 transform -translate-x-1/2 z-30 pointer-events-none"
-                    >
-                        <div className="bg-red-900/90 border border-red-500/50 px-6 py-3 rounded-2xl text-lg font-bold text-white shadow-2xl shadow-red-900/50 flex items-center gap-3">
-                            <AlertTriangle className="w-6 h-6 text-red-400" />
-                            {formWarning}
-                        </div>
-                    </motion.div>
+                    <>
+                        {/* Red screen-edge vignette pulse */}
+                        <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: [0, 0.5, 0.2] }}
+                            exit={{ opacity: 0 }}
+                            transition={{ duration: 0.5, repeat: Infinity, repeatType: "reverse" }}
+                            className="absolute inset-0 z-20 pointer-events-none"
+                            style={{
+                                boxShadow: 'inset 0 0 80px 30px rgba(220,38,38,0.35)'
+                            }}
+                        />
+                        {/* Warning banner */}
+                        <motion.div
+                            initial={{ opacity: 0, y: -50, scale: 0.95 }}
+                            animate={{ opacity: 1, y: 0, scale: 1 }}
+                            exit={{ opacity: 0, y: -50, scale: 0.95 }}
+                            transition={{ type: "spring", stiffness: 400, damping: 25 }}
+                            className="absolute top-24 left-1/2 transform -translate-x-1/2 z-30 pointer-events-none"
+                        >
+                            <div className="bg-red-950/95 border border-red-500/70 px-6 py-3 rounded-2xl text-lg font-bold text-white shadow-2xl shadow-red-900/60 flex items-center gap-3 max-w-lg">
+                                <motion.div
+                                    animate={{ scale: [1, 1.2, 1] }}
+                                    transition={{ duration: 0.8, repeat: Infinity }}
+                                >
+                                    <AlertTriangle className="w-6 h-6 text-red-400 flex-shrink-0" />
+                                </motion.div>
+                                <span className="text-base">{formWarning}</span>
+                            </div>
+                        </motion.div>
+                    </>
                 )}
             </AnimatePresence>
 
@@ -295,23 +315,37 @@ export default function Workout() {
             />
 
             {/* Feedback Overlay - Centered */}
-            <AnimatePresence>
-                {feedback && !formWarning && (
+            <AnimatePresence mode="wait">
+                {feedback && (
                     <motion.div
-                        initial={{ opacity: 0, scale: 0.9 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        exit={{ opacity: 0, scale: 0.9 }}
+                        key={feedback}
+                        initial={{ opacity: 0, y: -20, scale: 0.9 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: -10, scale: 0.95 }}
+                        transition={{ type: 'spring', stiffness: 500, damping: 30 }}
                         className="absolute z-20 top-32 left-1/2 transform -translate-x-1/2 pointer-events-none"
                     >
-                        <div className={`bg-surface/90 backdrop-blur-md border px-8 py-4 rounded-full text-xl font-bold text-white shadow-[0_0_20px_rgba(0,0,0,0.5)] flex items-center gap-4 ${feedback.includes('Good') ? 'border-fitness-green/50 text-fitness-green' : 'border-fitness-blue/50 text-fitness-blue'
-                            }`}>
-                            {feedback.includes('Good') ? (
-                                <CheckCircle2 className="w-6 h-6" />
-                            ) : (
-                                <AlertCircle className="w-6 h-6" />
-                            )}
-                            {feedback}
-                        </div>
+                        {/* Perfect rep — green */}
+                        {feedback.includes('Perfect') && (
+                            <div className="bg-black/80 backdrop-blur-md border border-fitness-green/60 px-8 py-4 rounded-full text-xl font-bold text-fitness-green shadow-[0_0_30px_rgba(164,255,0,0.3)] flex items-center gap-3">
+                                <CheckCircle2 className="w-6 h-6 flex-shrink-0" />
+                                {feedback}
+                            </div>
+                        )}
+                        {/* Rep not counted — red */}
+                        {feedback.includes('not counted') && (
+                            <div className="bg-red-950/90 backdrop-blur-md border border-red-500/70 px-8 py-4 rounded-full text-xl font-bold text-white shadow-[0_0_30px_rgba(220,38,38,0.4)] flex items-center gap-3">
+                                <AlertCircle className="w-6 h-6 text-red-400 flex-shrink-0" />
+                                {feedback}
+                            </div>
+                        )}
+                        {/* In progress / other — blue */}
+                        {!feedback.includes('Perfect') && !feedback.includes('not counted') && (
+                            <div className="bg-black/80 backdrop-blur-md border border-fitness-blue/50 px-8 py-4 rounded-full text-lg font-semibold text-fitness-blue shadow-[0_0_20px_rgba(0,245,234,0.2)] flex items-center gap-3">
+                                <Activity className="w-5 h-5 flex-shrink-0" />
+                                {feedback}
+                            </div>
+                        )}
                     </motion.div>
                 )}
             </AnimatePresence>
@@ -319,13 +353,8 @@ export default function Workout() {
             {/* Bottom Stats Overlay */}
             <div className="absolute bottom-0 left-0 right-0 z-10 p-8 bg-gradient-to-t from-black via-black/90 to-transparent pt-32 pointer-events-none">
                 <div className="max-w-6xl mx-auto grid grid-cols-4 gap-4">
-                    <StatBox label="Reps" value={reps} color="text-fitness-red" highlight />
-                    <StatBox
-                        label="Stage"
-                        value={stage || '-'}
-                        className={stage === 'UP' ? 'text-fitness-blue' : stage === 'DOWN' ? 'text-fitness-green' : 'text-zinc-500'}
-                        isText
-                    />
+                    <StatBox label="✅ Perfect" value={reps} color="text-fitness-green" highlight />
+                    <StatBox label="❌ Blocked" value={errorCount} color="text-red-400" isText={false} />
                     <StatBox label="Calories" value={calories.toFixed(1)} color="text-orange-400" />
                     <StatBox label="Time" value={formatTime(elapsedTime)} color="text-fitness-yellow" isMono />
                 </div>

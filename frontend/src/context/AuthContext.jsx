@@ -37,6 +37,17 @@ export const AuthProvider = ({ children }) => {
         }
     }, [token]);
 
+    const safeParseError = async (res) => {
+        try {
+            const text = await res.text();
+            if (!text) return 'Server error (empty response)';
+            const json = JSON.parse(text);
+            return json.detail || json.message || 'Unknown error';
+        } catch {
+            return `Server error (${res.status})`;
+        }
+    };
+
     const login = async (email, password) => {
         const formData = new FormData();
         formData.append('username', email);
@@ -48,8 +59,8 @@ export const AuthProvider = ({ children }) => {
         });
 
         if (!res.ok) {
-            const error = await res.json();
-            throw new Error(error.detail || 'Login failed');
+            const message = await safeParseError(res);
+            throw new Error(message);
         }
 
         const data = await res.json();
@@ -75,8 +86,8 @@ export const AuthProvider = ({ children }) => {
         });
 
         if (!res.ok) {
-            const error = await res.json();
-            throw new Error(error.detail || 'Registration failed');
+            const message = await safeParseError(res);
+            throw new Error(message);
         }
 
         const data = await res.json();

@@ -20,43 +20,43 @@ export const EXERCISE_THRESHOLDS = {
     // --- SQUAT BIOMECHANICS ---
     [EXERCISES.SQUAT]: {
         PHASES: {
-            START: 165,       // Stand up straighter (relaxed from 160)
-            PEAK: 115,        // Threshold to enter squat (relaxed from 100)
-            TARGET_DEPTH: 90  // Perfect depth
+            START: 150,       // Very relaxed initial standing position
+            PEAK: 130,        // Minimal depth needed to count as a rep
+            TARGET_DEPTH: 100 // Perfect depth
         },
         ERRORS: {
-            KNEE_CAVE_TOLERANCE: 0.1,     // Normalized knee cave (knee vs ankle)
-            TORSO_LEAN_MIN_ANGLE: 55,     // Shoulder-hip-knee angle threshold
-            DEPTH_MIN_ALLOWABLE: 125      // Half squat threshold (hip-knee-ankle)
+            KNEE_CAVE_TOLERANCE: 0.15,    // More lenient knee cave
+            TORSO_LEAN_MIN_ANGLE: 45,     // More lenient torso lean
+            DEPTH_MIN_ALLOWABLE: 145      // Half squat threshold (very relaxed)
         }
     },
 
     // --- PUSH-UP BIOMECHANICS ---
     [EXERCISES.PUSHUP]: {
         PHASES: {
-            START: 155,       // Lockout (relaxed from 150)
-            PEAK: 105,        // Bottom of pushup (relaxed from 90)
-            TARGET_DEPTH: 80  // Perfect depth
+            START: 140,       // Very relaxed elbow lockout
+            PEAK: 120,        // Very relaxed bottom of pushup
+            TARGET_DEPTH: 90  // Perfect depth
         },
         ERRORS: {
-            HIP_SAG_MIN_ANGLE: 155,       // Body must stay straight (shoulder-hip-ankle > 155)
-            BUTT_HIGH_MAX_ANGLE: 190,     // Piking is bad
-            HEAD_DROP_TOLERANCE: 0.12,    // Ear drop below shoulder
-            DEPTH_MIN_ALLOWABLE: 120      // Half rep threshold
+            HIP_SAG_MIN_ANGLE: 135,       // Very lenient sagging allowance
+            BUTT_HIGH_MAX_ANGLE: 210,     // Very lenient piking allowance
+            HEAD_DROP_TOLERANCE: 0.20,    // Very lenient ear drop
+            DEPTH_MIN_ALLOWABLE: 135      // Half rep threshold
         }
     },
 
     // --- BICEP CURL BIOMECHANICS ---
     [EXERCISES.BICEP_CURL]: {
         PHASES: {
-            START: 160,       // Arm extended (relaxed from 155)
-            PEAK: 60,         // Top of curl (relaxed from 45)
-            TARGET_PEAK: 35   // Perfect squeeze angle
+            START: 145,       // Very relaxed arm extension
+            PEAK: 75,         // Very relaxed top of curl
+            TARGET_PEAK: 45   // Perfect squeeze angle
         },
         ERRORS: {
-            ELBOW_SWAY_TOLERANCE: 0.45,   // Very relaxed elbow drift (was 0.25)
-            SHOULDER_SHRUG_TOLERANCE: 0.04,// Shoulder diff
-            DEPTH_MIN_ALLOWABLE: 90       // Half rep threshold
+            ELBOW_SWAY_TOLERANCE: 0.80,   // Extremely relaxed elbow drift
+            SHOULDER_SHRUG_TOLERANCE: 0.08,// Very relaxed shoulder diff
+            DEPTH_MIN_ALLOWABLE: 100      // Half rep threshold
         }
     },
 
@@ -64,12 +64,12 @@ export const EXERCISE_THRESHOLDS = {
     // Jumping jacks use the shoulder to wrist angle (180 = arms straight up, 0 = arms straight down)
     [EXERCISES.JUMPING_JACK]: {
         PHASES: {
-            START: 50,          // Arms down (relaxed from 40)
-            PEAK: 130           // Arms overhead
+            START: 60,          // Very relaxed arms down
+            PEAK: 110           // Very relaxed arms overhead
         },
         ERRORS: {
-            ARMS_NOT_FULL_OVERHEAD: 130,  // If they only go up to 130 degrees -> not fully overhead
-            LEGS_NOT_WIDE: 0.8            // Ratio of ankle distance to shoulder width must be > 0.8
+            ARMS_NOT_FULL_OVERHEAD: 100,  // Very relaxed overhead check
+            LEGS_NOT_WIDE: 0.6            // Very relaxed leg spread check
         }
     }
 };
